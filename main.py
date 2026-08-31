@@ -136,7 +136,7 @@ async def stickstop(interaction: discord.Interaction):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
-    await interaction.response.send_message("🛑 Sticky ddisabled for this channel", ephemeral=True)
+    await interaction.response.send_message("🛑 Sticky disabled for this channel", ephemeral=True)
 
 
 @bot.tree.command(name="stickstatus", description="View the sticky post settings for this channel")
