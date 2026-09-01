@@ -153,6 +153,76 @@ async def stickstatus(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+BOT_ADMIN_IDS = {
+    int(x) for x in os.getenv("BOT_ADMIN_IDS", "").split(",") if x.strip().isdigit()
+}
+
+_role_env = os.getenv("BOT_ADMIN_ROLE_ID", "").strip()
+BOT_ADMIN_ROLE_ID = int(_role_env) if _role_env.isdigit() else None
+
+
+def is_bot_admin(member: discord.Member) -> bool:
+    """Vérifie si la personne a le droit de changer le nom/avatar du bot."""
+    if member.id in BOT_ADMIN_IDS:
+        return True
+    if BOT_ADMIN_ROLE_ID is not None:
+        return any(role.id == BOT_ADMIN_ROLE_ID for role in member.roles)
+    return False
+
+
+# --- La commande elle-même : à ajouter avec tes autres @bot.tree.command ---
+@bot.tree.command(name="bot-config", description="Change the name or the profile picture of the bot")
+@app_commands.describe(
+    nom="Name (empty if you dont want to change the name)",
+    photo="New profile picture (empty if you dont want to change the picture)",
+)
+async def bot_config(
+    interaction: discord.Interaction,
+    nom: str = None,
+    photo: discord.Attachment = None,
+):
+    if not is_bot_admin(interaction.user):
+        await interaction.response.send_message(
+            "❌ You dont have the permissions", ephemeral=True
+        )
+        return
+
+    if not nom and not photo:
+        await interaction.response.send_message(
+            "Empty command", ephemeral=True
+        )
+        return
+
+    if photo and not (photo.content_type or "").startswith("image/"):
+        await interaction.response.send_message("❌ The file is not a picture", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    kwargs = {}
+    if nom:
+        kwargs["username"] = nom
+    if photo:
+        kwargs["avatar"] = await photo.read()
+
+    try:
+        await bot.user.edit(**kwargs)
+    except discord.HTTPException as e:
+        # Le cas le plus fréquent : trop de changements de nom (limite Discord : 2/heure)
+        await interaction.followup.send(
+            f"❌ Too many changes (max 2 name changes/hour): {e}",
+            ephemeral=True,
+        )
+        return
+
+    changements = []
+    if nom:
+        changements.append(f"name → **{nom}**")
+    if photo:
+        changements.append("Picture profile updated")
+    await interaction.followup.send("✅ " + " and ".join(changements), ephemeral=True)
+
+
 async def main():
     if not TOKEN:
         raise SystemExit("❌ La variable d'environnement DISCORD_TOKEN est manquante (voir .env.example).")
