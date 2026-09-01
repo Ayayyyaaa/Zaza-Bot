@@ -1,9 +1,9 @@
-"""Bot Discord : message "sticky" qui reste toujours en bas du salon.
+"""Discord bot: a "sticky" message that always stays at the bottom of the channel.
 
-Principe : à chaque nouveau message posté par un membre dans un salon où un
-sticky est actif, on incrémente un compteur. Une fois le seuil atteint, on
-supprime l'ancien message sticky et on en renvoie un nouveau (donc toujours
-tout en bas de la conversation), puis on remet le compteur à 0.
+Principle: every time a member posts a new message in a channel with an
+active sticky, a counter is incremented. Once the threshold is reached, the
+old sticky message is deleted and a new one is sent (so it's always at the
+bottom of the conversation), then the counter is reset to 0.
 """
 import asyncio
 import logging
@@ -23,10 +23,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 log = logging.getLogger("sticky-bot")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID") 
+GUILD_ID = os.getenv("GUILD_ID")
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "sticky.db")
-DEFAULT_THRESHOLD = int(os.getenv("DEFAULT_THRESHOLD", "1"))  
+DEFAULT_THRESHOLD = int(os.getenv("DEFAULT_THRESHOLD", "1"))
 
 INTENTS = discord.Intents.default()
 
@@ -64,7 +64,7 @@ bot = StickyBot()
 
 
 # ---------------------------------------------------------------------------
-# Écoute de tous les messages pour déclencher le repost du sticky
+# Listens to every message to trigger the sticky repost
 # ---------------------------------------------------------------------------
 @bot.event
 async def on_message(message: discord.Message):
@@ -79,7 +79,7 @@ async def on_message(message: discord.Message):
     if counter < cfg["threshold"]:
         return
 
-    # Seuil atteint : on supprime l'ancien sticky et on en renvoie un nouveau
+    # Threshold reached: delete the old sticky and send a new one
     if cfg["last_message_id"]:
         try:
             old = await message.channel.fetch_message(cfg["last_message_id"])
@@ -95,28 +95,28 @@ async def on_message(message: discord.Message):
 
 
 # ---------------------------------------------------------------------------
-# Commandes slash
+# Slash commands
 # ---------------------------------------------------------------------------
 @bot.tree.command(name="stick", description="Stick a message for this channel")
 @app_commands.describe(
-    texte="Message content",
-    seuil="Number of messages before repost (default 1)",
+    text="Message content",
+    threshold="Number of messages before repost (default 1)",
 )
 @app_commands.default_permissions(manage_messages=True)
-async def stick(interaction: discord.Interaction, texte: str, seuil: app_commands.Range[int, 1, 50] = DEFAULT_THRESHOLD):
+async def stick(interaction: discord.Interaction, text: str, threshold: app_commands.Range[int, 1, 50] = DEFAULT_THRESHOLD):
     perms = interaction.channel.permissions_for(interaction.guild.me)
     if not (perms.send_messages and perms.manage_messages):
         await interaction.response.send_message(
-            "❌ Missing permissions : **Send messages** and **Manage messages** in this channel.",
+            "❌ Missing permissions: **Send messages** and **Manage messages** in this channel.",
             ephemeral=True,
         )
         return
 
     await interaction.response.defer(ephemeral=True)
-    msg = await interaction.channel.send(texte)
-    await bot.db.set_sticky(interaction.channel.id, interaction.guild_id, texte, seuil, msg.id)
+    msg = await interaction.channel.send(text)
+    await bot.db.set_sticky(interaction.channel.id, interaction.guild_id, text, threshold, msg.id)
     await interaction.followup.send(
-        f"📌 Sticky enabled in  {interaction.channel.mention} (repost every {seuil} messages).",
+        f"📌 Sticky enabled in {interaction.channel.mention} (repost every {threshold} messages).",
         ephemeral=True,
     )
 
@@ -126,7 +126,7 @@ async def stick(interaction: discord.Interaction, texte: str, seuil: app_command
 async def stickstop(interaction: discord.Interaction):
     cfg = await bot.db.remove_sticky(interaction.channel.id)
     if not cfg:
-        await interaction.response.send_message("There are no active sticky posts in this channel", ephemeral=True)
+        await interaction.response.send_message("There is no active sticky message in this channel.", ephemeral=True)
         return
 
     if cfg["last_message_id"]:
@@ -136,33 +136,35 @@ async def stickstop(interaction: discord.Interaction):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
-    await interaction.response.send_message("🛑 Sticky disabled for this channel", ephemeral=True)
+    await interaction.response.send_message("🛑 Sticky disabled for this channel.", ephemeral=True)
 
 
 @bot.tree.command(name="stickstatus", description="View the sticky post settings for this channel")
 async def stickstatus(interaction: discord.Interaction):
     cfg = await bot.db.get_sticky(interaction.channel.id)
     if not cfg:
-        await interaction.response.send_message("There are no active sticky posts in this channel", ephemeral=True)
+        await interaction.response.send_message("There is no active sticky message in this channel.", ephemeral=True)
         return
 
     embed = discord.Embed(title="📌 Active Sticky", color=discord.Color.blurple())
     embed.add_field(name="Text", value=cfg["text"][:1000], inline=False)
     embed.add_field(name="Repost Threshold", value=f"{cfg['threshold']} messages", inline=True)
-    embed.add_field(name="Current counter", value=f"{cfg['counter']}/{cfg['threshold']}", inline=True)
+    embed.add_field(name="Current Counter", value=f"{cfg['counter']}/{cfg['threshold']}", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# --- People/role allowed to change the bot's name/avatar ---
+# Comma-separated Discord IDs, e.g. "111111111111111111,222222222222222222"
 BOT_ADMIN_IDS = {
     int(x) for x in os.getenv("BOT_ADMIN_IDS", "").split(",") if x.strip().isdigit()
 }
-
+# Allowed role ID (optional), e.g. "333333333333333333"
 _role_env = os.getenv("BOT_ADMIN_ROLE_ID", "").strip()
 BOT_ADMIN_ROLE_ID = int(_role_env) if _role_env.isdigit() else None
 
 
 def is_bot_admin(member: discord.Member) -> bool:
-    """Vérifie si la personne a le droit de changer le nom/avatar du bot."""
+    """Checks whether this member is allowed to change the bot's name/avatar."""
     if member.id in BOT_ADMIN_IDS:
         return True
     if BOT_ADMIN_ROLE_ID is not None:
@@ -170,57 +172,56 @@ def is_bot_admin(member: discord.Member) -> bool:
     return False
 
 
-# --- La commande elle-même : à ajouter avec tes autres @bot.tree.command ---
-@bot.tree.command(name="bot-config", description="Change the name or the profile picture of the bot")
+@bot.tree.command(name="bot-config", description="Change the bot's name and/or profile picture")
 @app_commands.describe(
-    nom="Name (empty if you dont want to change the name)",
-    photo="New profile picture (empty if you dont want to change the picture)",
+    name="New bot name (leave empty to keep the current name)",
+    picture="New profile picture (leave empty to keep the current picture)",
 )
 async def bot_config(
     interaction: discord.Interaction,
-    nom: str = None,
-    photo: discord.Attachment = None,
+    name: str = None,
+    picture: discord.Attachment = None,
 ):
     if not is_bot_admin(interaction.user):
         await interaction.response.send_message(
-            "❌ You dont have the permissions", ephemeral=True
+            "❌ You don't have permission to use this command.", ephemeral=True
         )
         return
 
-    if not nom and not photo:
+    if not name and not picture:
         await interaction.response.send_message(
-            "Empty command", ephemeral=True
+            "Please provide a name and/or a picture.", ephemeral=True
         )
         return
 
-    if photo and not (photo.content_type or "").startswith("image/"):
-        await interaction.response.send_message("❌ The file is not a picture", ephemeral=True)
+    if picture and not (picture.content_type or "").startswith("image/"):
+        await interaction.response.send_message("❌ The file is not an image.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
 
     kwargs = {}
-    if nom:
-        kwargs["username"] = nom
-    if photo:
-        kwargs["avatar"] = await photo.read()
+    if name:
+        kwargs["username"] = name
+    if picture:
+        kwargs["avatar"] = await picture.read()
 
     try:
         await bot.user.edit(**kwargs)
     except discord.HTTPException as e:
-        # Le cas le plus fréquent : trop de changements de nom (limite Discord : 2/heure)
+        # Most common case: too many name changes (Discord limit: 2/hour)
         await interaction.followup.send(
             f"❌ Too many changes (max 2 name changes/hour): {e}",
             ephemeral=True,
         )
         return
 
-    changements = []
-    if nom:
-        changements.append(f"name → **{nom}**")
-    if photo:
-        changements.append("Picture profile updated")
-    await interaction.followup.send("✅ " + " and ".join(changements), ephemeral=True)
+    changes = []
+    if name:
+        changes.append(f"name → **{name}**")
+    if picture:
+        changes.append("profile picture updated")
+    await interaction.followup.send("✅ " + " and ".join(changes), ephemeral=True)
 
 
 async def main():
