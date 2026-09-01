@@ -75,16 +75,7 @@ class StickyBot(commands.Bot):
         else:
             await self.tree.sync()
             log.info("Commandes synchronisées globalement (jusqu'à 1h pour apparaître partout)")
-
-        # Réapplique le statut/activité configuré précédemment (la présence
-        # n'est pas persistée par Discord, il faut la renvoyer à chaque connexion)
-        presence = await self.db.get_presence()
-        if presence and presence["status"]:
-            status_obj, activity_obj = build_presence(
-                presence["status"], presence["activity_type"], presence["activity_text"]
-            )
-            await self.change_presence(status=status_obj, activity=activity_obj)
-            log.info("Présence restaurée : %s / %s", presence["status"], presence["activity_text"])
+        # <- rien après ça, le bloc de présence n'est PLUS ici
 
     async def close(self):
         if self.db:
@@ -93,6 +84,15 @@ class StickyBot(commands.Bot):
 
     async def on_ready(self):
         log.info("Connecté en tant que %s (id: %s)", self.user, self.user.id)
+
+        # Restauration de la présence déplacée ici
+        presence = await self.db.get_presence()
+        if presence and presence["status"]:
+            status_obj, activity_obj = build_presence(
+                presence["status"], presence["activity_type"], presence["activity_text"]
+            )
+            await self.change_presence(status=status_obj, activity=activity_obj)
+            log.info("Présence restaurée : %s / %s", presence["status"], presence["activity_text"])
 
 
 bot = StickyBot()
