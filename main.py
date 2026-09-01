@@ -42,8 +42,8 @@ STATUS_TYPES = {
     "dnd": discord.Status.dnd,
     "invisible": discord.Status.invisible,
 }
- 
- 
+
+
 def build_presence(status_key: str, activity_type_key: str, activity_text: str):
     """Construit les objets discord.Status / discord.Activity à partir de valeurs stockées en base."""
     status_obj = STATUS_TYPES.get(status_key, discord.Status.online)
@@ -75,7 +75,6 @@ class StickyBot(commands.Bot):
         else:
             await self.tree.sync()
             log.info("Commandes synchronisées globalement (jusqu'à 1h pour apparaître partout)")
-        # <- rien après ça, le bloc de présence n'est PLUS ici
 
     async def close(self):
         if self.db:
@@ -85,7 +84,9 @@ class StickyBot(commands.Bot):
     async def on_ready(self):
         log.info("Connecté en tant que %s (id: %s)", self.user, self.user.id)
 
-        # Restauration de la présence déplacée ici
+        # Restauration de la présence (statut/activité) : doit se faire ici,
+        # pas dans setup_hook, car la connexion Gateway n'est pas encore
+        # établie à ce moment-là (self.ws serait encore None).
         presence = await self.db.get_presence()
         if presence and presence["status"]:
             status_obj, activity_obj = build_presence(
@@ -244,21 +245,21 @@ async def bot_config(
             "❌ You don't have permission to use this command.", ephemeral=True
         )
         return
- 
+
     if not any([name, picture, banner, status, activity_text]):
         await interaction.response.send_message(
             "Please provide at least one field to change.", ephemeral=True
         )
         return
- 
+
     for attachment, label in ((picture, "picture"), (banner, "banner")):
         if attachment and not (attachment.content_type or "").startswith("image/"):
             await interaction.response.send_message(f"❌ The {label} file is not an image.", ephemeral=True)
             return
- 
+
     await interaction.response.defer(ephemeral=True)
     changes = []
- 
+
     # --- Name / picture / banner : profile edit via REST API ---
     kwargs = {}
     if name:
@@ -267,7 +268,7 @@ async def bot_config(
         kwargs["avatar"] = await picture.read()
     if banner:
         kwargs["banner"] = await banner.read()
- 
+
     if kwargs:
         try:
             await bot.user.edit(**kwargs)
@@ -283,23 +284,23 @@ async def bot_config(
             changes.append("profile picture updated")
         if banner:
             changes.append("banner updated")
- 
+
     # --- Status / activity : live presence via the gateway (not the REST profile) ---
     if status or activity_text:
         current = await bot.db.get_presence()
         status_key = status.value if status else (current["status"] if current else "online")
         activity_type_key = activity_type.value if activity_type else (current["activity_type"] if current else None)
         text_key = activity_text if activity_text is not None else (current["activity_text"] if current else None)
- 
+
         await bot.db.set_presence(status_key, activity_type_key, text_key)
         status_obj, activity_obj = build_presence(status_key, activity_type_key, text_key)
         await bot.change_presence(status=status_obj, activity=activity_obj)
- 
+
         if status:
             changes.append(f"status → **{status.name}**")
         if activity_text:
             changes.append(f"activity → **{activity_text}**")
- 
+
     await interaction.followup.send("✅ " + " and ".join(changes), ephemeral=True)
 
 
