@@ -30,6 +30,31 @@ DEFAULT_THRESHOLD = int(os.getenv("DEFAULT_THRESHOLD", "1"))
 
 INTENTS = discord.Intents.default()
 
+ACTIVITY_TYPES = {
+    "playing": discord.ActivityType.playing,
+    "watching": discord.ActivityType.watching,
+    "listening": discord.ActivityType.listening,
+    "competing": discord.ActivityType.competing,
+}
+STATUS_TYPES = {
+    "online": discord.Status.online,
+    "idle": discord.Status.idle,
+    "dnd": discord.Status.dnd,
+    "invisible": discord.Status.invisible,
+}
+ 
+ 
+def build_presence(status_key: str, activity_type_key: str, activity_text: str):
+    """Construit les objets discord.Status / discord.Activity à partir de valeurs stockées en base."""
+    status_obj = STATUS_TYPES.get(status_key, discord.Status.online)
+    activity_obj = None
+    if activity_type_key and activity_text:
+        activity_obj = discord.Activity(
+            type=ACTIVITY_TYPES.get(activity_type_key, discord.ActivityType.playing),
+            name=activity_text,
+        )
+    return status_obj, activity_obj
+
 
 class StickyBot(commands.Bot):
     def __init__(self):
@@ -50,6 +75,16 @@ class StickyBot(commands.Bot):
         else:
             await self.tree.sync()
             log.info("Commandes synchronisées globalement (jusqu'à 1h pour apparaître partout)")
+
+        # Réapplique le statut/activité configuré précédemment (la présence
+        # n'est pas persistée par Discord, il faut la renvoyer à chaque connexion)
+        presence = await self.db.get_presence()
+        if presence and presence["status"]:
+            status_obj, activity_obj = build_presence(
+                presence["status"], presence["activity_type"], presence["activity_text"]
+            )
+            await self.change_presence(status=status_obj, activity=activity_obj)
+            log.info("Présence restaurée : %s / %s", presence["status"], presence["activity_text"])
 
     async def close(self):
         if self.db:
@@ -172,55 +207,99 @@ def is_bot_admin(member: discord.Member) -> bool:
     return False
 
 
-@bot.tree.command(name="bot-config", description="Change the bot's name and/or profile picture")
+@bot.tree.command(name="bot-config", description="Change the bot's name, profile picture, banner, and/or status")
 @app_commands.describe(
     name="New bot name (leave empty to keep the current name)",
     picture="New profile picture (leave empty to keep the current picture)",
+    banner="New banner image (leave empty to keep the current banner)",
+    status="Online status",
+    activity_type="Type of activity shown next to the status text",
+    activity_text="Text shown next to the status (e.g. 'over the server')",
+)
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="Online", value="online"),
+        app_commands.Choice(name="Idle", value="idle"),
+        app_commands.Choice(name="Do Not Disturb", value="dnd"),
+        app_commands.Choice(name="Invisible", value="invisible"),
+    ],
+    activity_type=[
+        app_commands.Choice(name="Playing", value="playing"),
+        app_commands.Choice(name="Watching", value="watching"),
+        app_commands.Choice(name="Listening to", value="listening"),
+        app_commands.Choice(name="Competing in", value="competing"),
+    ],
 )
 async def bot_config(
     interaction: discord.Interaction,
     name: str = None,
     picture: discord.Attachment = None,
+    banner: discord.Attachment = None,
+    status: app_commands.Choice[str] = None,
+    activity_type: app_commands.Choice[str] = None,
+    activity_text: str = None,
 ):
     if not is_bot_admin(interaction.user):
         await interaction.response.send_message(
             "❌ You don't have permission to use this command.", ephemeral=True
         )
         return
-
-    if not name and not picture:
+ 
+    if not any([name, picture, banner, status, activity_text]):
         await interaction.response.send_message(
-            "Please provide a name and/or a picture.", ephemeral=True
+            "Please provide at least one field to change.", ephemeral=True
         )
         return
-
-    if picture and not (picture.content_type or "").startswith("image/"):
-        await interaction.response.send_message("❌ The file is not an image.", ephemeral=True)
-        return
-
+ 
+    for attachment, label in ((picture, "picture"), (banner, "banner")):
+        if attachment and not (attachment.content_type or "").startswith("image/"):
+            await interaction.response.send_message(f"❌ The {label} file is not an image.", ephemeral=True)
+            return
+ 
     await interaction.response.defer(ephemeral=True)
-
+    changes = []
+ 
+    # --- Name / picture / banner : profile edit via REST API ---
     kwargs = {}
     if name:
         kwargs["username"] = name
     if picture:
         kwargs["avatar"] = await picture.read()
-
-    try:
-        await bot.user.edit(**kwargs)
-    except discord.HTTPException as e:
-        # Most common case: too many name changes (Discord limit: 2/hour)
-        await interaction.followup.send(
-            f"❌ Too many changes (max 2 name changes/hour): {e}",
-            ephemeral=True,
-        )
-        return
-
-    changes = []
-    if name:
-        changes.append(f"name → **{name}**")
-    if picture:
-        changes.append("profile picture updated")
+    if banner:
+        kwargs["banner"] = await banner.read()
+ 
+    if kwargs:
+        try:
+            await bot.user.edit(**kwargs)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"❌ Too many changes (max 2 name changes/hour): {e}",
+                ephemeral=True,
+            )
+            return
+        if name:
+            changes.append(f"name → **{name}**")
+        if picture:
+            changes.append("profile picture updated")
+        if banner:
+            changes.append("banner updated")
+ 
+    # --- Status / activity : live presence via the gateway (not the REST profile) ---
+    if status or activity_text:
+        current = await bot.db.get_presence()
+        status_key = status.value if status else (current["status"] if current else "online")
+        activity_type_key = activity_type.value if activity_type else (current["activity_type"] if current else None)
+        text_key = activity_text if activity_text is not None else (current["activity_text"] if current else None)
+ 
+        await bot.db.set_presence(status_key, activity_type_key, text_key)
+        status_obj, activity_obj = build_presence(status_key, activity_type_key, text_key)
+        await bot.change_presence(status=status_obj, activity=activity_obj)
+ 
+        if status:
+            changes.append(f"status → **{status.name}**")
+        if activity_text:
+            changes.append(f"activity → **{activity_text}**")
+ 
     await interaction.followup.send("✅ " + " and ".join(changes), ephemeral=True)
 
 
