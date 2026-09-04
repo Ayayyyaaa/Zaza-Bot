@@ -103,6 +103,37 @@ class StickyBot(commands.Bot):
 
 bot = StickyBot()
 
+LOG_SOURCE_CHANNEL_ID = 1533559386629472486
+LOG_TARGET_CHANNEL_ID = 1545497664894935181
+
+
+async def forward_to_log(message: discord.Message):
+    target = bot.get_channel(LOG_TARGET_CHANNEL_ID)
+    if target is None:
+        log.warning("Salon de log %s introuvable (cache).", LOG_TARGET_CHANNEL_ID)
+        return
+ 
+    embed = discord.Embed(
+        description=message.content or "*(aucun contenu texte)*",
+        color=discord.Color.blurple(),
+        timestamp=message.created_at,
+    )
+    embed.set_author(name=f"{message.author} ({message.author.id})", icon_url=message.author.display_avatar.url)
+    embed.set_footer(text=f"#{message.channel.name}")
+ 
+    files = []
+    for attachment in message.attachments:
+        try:
+            files.append(await attachment.to_file())
+        except discord.HTTPException as e:
+            log.warning("Impossible de récupérer la pièce jointe %s : %s", attachment.filename, e)
+ 
+    try:
+        await target.send(embed=embed, files=files or None)
+    except discord.Forbidden:
+        log.warning("Permissions manquantes pour écrire dans le salon de log %s", LOG_TARGET_CHANNEL_ID)
+    except discord.HTTPException as e:
+        log.warning("Échec de l'envoi du log : %s", e)
 
 # ---------------------------------------------------------------------------
 # Listens to every message to trigger the sticky repost
@@ -111,6 +142,9 @@ bot = StickyBot()
 async def on_message(message: discord.Message):
     if message.author.id == bot.user.id or message.guild is None:
         return
+
+    if message.channel.id == LOG_SOURCE_CHANNEL_ID:
+        await forward_to_log(message)
 
     cfg = await bot.db.get_sticky(message.channel.id)
     if not cfg:
