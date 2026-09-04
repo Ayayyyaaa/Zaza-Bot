@@ -104,7 +104,7 @@ bot = StickyBot()
 # ---------------------------------------------------------------------------
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or message.guild is None:
+    if message.author.id == bot.user.id or message.guild is None:
         return
 
     cfg = await bot.db.get_sticky(message.channel.id)
