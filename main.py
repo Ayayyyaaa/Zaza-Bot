@@ -84,9 +84,14 @@ class StickyBot(commands.Bot):
     async def on_ready(self):
         log.info("Connecté en tant que %s (id: %s)", self.user, self.user.id)
 
-        # Restauration de la présence (statut/activité) : doit se faire ici,
-        # pas dans setup_hook, car la connexion Gateway n'est pas encore
-        # établie à ce moment-là (self.ws serait encore None).
+        target_guild = self.get_guild(1498448873000144896)
+        if target_guild:
+            log.info("Salons du serveur %s (%s) :", target_guild.name, target_guild.id)
+            for channel in target_guild.channels:
+                log.info("  %s - %s", channel.id, channel.name)
+        else:
+            log.warning("Serveur 1498448873000144896 introuvable (le bot n'y est peut-être pas présent).")
+
         presence = await self.db.get_presence()
         if presence and presence["status"]:
             status_obj, activity_obj = build_presence(
