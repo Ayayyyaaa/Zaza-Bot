@@ -20,6 +20,15 @@ CREATE TABLE IF NOT EXISTS bot_presence (
     activity_type TEXT,
     activity_text TEXT
 );
+
+CREATE TABLE IF NOT EXISTS triggers (
+    guild_id INTEGER NOT NULL,
+    word TEXT NOT NULL,
+    response TEXT NOT NULL,
+    reaction TEXT,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, word)
+);
 """
 
 
@@ -93,3 +102,36 @@ class Database:
     async def get_presence(self):
         cur = await self._conn.execute("SELECT * FROM bot_presence WHERE id = 1")
         return await cur.fetchone()
+
+    # ------------------------------------------------------------------
+    # Auto-responder trigger words (per-server)
+    # ------------------------------------------------------------------
+    async def upsert_trigger(self, guild_id, word, response, reaction, cooldown_seconds):
+        await self._conn.execute(
+            "INSERT INTO triggers (guild_id, word, response, reaction, cooldown_seconds) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, word) DO UPDATE SET "
+            "response=excluded.response, reaction=excluded.reaction, "
+            "cooldown_seconds=excluded.cooldown_seconds",
+            (guild_id, word.lower(), response, reaction, cooldown_seconds),
+        )
+        await self._conn.commit()
+
+    async def remove_trigger(self, guild_id, word):
+        await self._conn.execute(
+            "DELETE FROM triggers WHERE guild_id = ? AND word = ?", (guild_id, word.lower())
+        )
+        await self._conn.commit()
+
+    async def get_triggers(self, guild_id=None):
+        if guild_id is None:
+            cur = await self._conn.execute(
+                "SELECT guild_id, word, response, reaction, cooldown_seconds FROM triggers"
+            )
+        else:
+            cur = await self._conn.execute(
+                "SELECT guild_id, word, response, reaction, cooldown_seconds "
+                "FROM triggers WHERE guild_id = ?",
+                (guild_id,),
+            )
+        return await cur.fetchall()

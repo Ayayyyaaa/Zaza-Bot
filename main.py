@@ -8,6 +8,8 @@ bottom of the conversation), then the counter is reset to 0.
 import asyncio
 import logging
 import os
+import re
+import time
 from typing import Optional
 
 import discord
@@ -29,6 +31,7 @@ DB_PATH = os.path.join(DATA_DIR, "sticky.db")
 DEFAULT_THRESHOLD = int(os.getenv("DEFAULT_THRESHOLD", "1"))
 
 INTENTS = discord.Intents.default()
+INTENTS.message_content = True  # required to read message content for the trigger-word auto-responder
 
 ACTIVITY_TYPES = {
     "playing": discord.ActivityType.playing,
@@ -60,12 +63,20 @@ class StickyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=INTENTS)
         self.db: Optional[Database] = None
+        # In-memory cache of trigger words, kept in sync with the DB so on_message
+        # doesn't need a database round-trip for every single message.
+        # Shape: {guild_id: {word_lowercase: {"response": str, "reaction": str|None, "cooldown_seconds": int}}}
+        self.trigger_cache: dict[int, dict[str, dict]] = {}
+        # Last time (time.time()) each (guild_id, word) trigger fired, for cooldown checks.
+        self.trigger_last_fired: dict[tuple[int, str], float] = {}
 
     async def setup_hook(self):
         os.makedirs(DATA_DIR, exist_ok=True)
         self.db = Database(DB_PATH)
         await self.db.connect()
         log.info("Base de données prête (%s)", DB_PATH)
+
+        await self.load_triggers()
 
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
@@ -99,6 +110,18 @@ class StickyBot(commands.Bot):
             )
             await self.change_presence(status=status_obj, activity=activity_obj)
             log.info("Présence restaurée : %s / %s", presence["status"], presence["activity_text"])
+
+    async def load_triggers(self):
+        """Loads every trigger word from the DB into the in-memory cache."""
+        self.trigger_cache.clear()
+        rows = await self.db.get_triggers()
+        for row in rows:
+            self.trigger_cache.setdefault(row["guild_id"], {})[row["word"]] = {
+                "response": row["response"],
+                "reaction": row["reaction"],
+                "cooldown_seconds": row["cooldown_seconds"],
+            }
+        log.info("Loaded %d trigger word(s) from the database.", len(rows))
 
 
 bot = StickyBot()
@@ -136,6 +159,39 @@ async def forward_to_log(message: discord.Message):
         log.warning("Échec de l'envoi du log : %s", e)
 
 # ---------------------------------------------------------------------------
+# Trigger words: replies + optional reaction when a word is mentioned
+# ---------------------------------------------------------------------------
+async def check_triggers(message: discord.Message):
+    triggers = bot.trigger_cache.get(message.guild.id)
+    if not triggers:
+        return
+
+    content_lower = message.content.lower()
+    now = time.time()
+
+    for word, cfg in triggers.items():
+        if not re.search(rf"\b{re.escape(word)}\b", content_lower):
+            continue
+
+        key = (message.guild.id, word)
+        last_fired = bot.trigger_last_fired.get(key, 0.0)
+        if now - last_fired < cfg["cooldown_seconds"]:
+            continue  # still on cooldown, skip silently
+        bot.trigger_last_fired[key] = now
+
+        if cfg["response"]:
+            try:
+                await message.channel.send(cfg["response"])
+            except discord.HTTPException:
+                log.warning("Failed to send trigger response for '%s'.", word)
+        if cfg["reaction"]:
+            try:
+                await message.add_reaction(cfg["reaction"])
+            except discord.HTTPException:
+                log.warning("Failed to add reaction '%s' for trigger '%s'.", cfg["reaction"], word)
+
+
+# ---------------------------------------------------------------------------
 # Listens to every message to trigger the sticky repost
 # ---------------------------------------------------------------------------
 @bot.event
@@ -145,6 +201,9 @@ async def on_message(message: discord.Message):
 
     if message.channel.id == LOG_SOURCE_CHANNEL_ID:
         await forward_to_log(message)
+
+    if not message.author.bot:
+        await check_triggers(message)
 
     cfg = await bot.db.get_sticky(message.channel.id)
     if not cfg:
@@ -226,6 +285,75 @@ async def stickstatus(interaction: discord.Interaction):
     embed.add_field(name="Repost Threshold", value=f"{cfg['threshold']} messages", inline=True)
     embed.add_field(name="Current Counter", value=f"{cfg['counter']}/{cfg['threshold']}", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="respond", description="Create or update a trigger word auto-responder")
+@app_commands.describe(
+    word="Trigger word (matched as a whole word in messages, case-insensitive)",
+    response="What the bot replies when the word is mentioned",
+    reaction="Emoji the bot reacts with on the triggering message (optional)",
+    cooldown_seconds="Minimum time in seconds between triggers for this word (optional, default: no cooldown)",
+)
+@app_commands.default_permissions(manage_messages=True)
+async def respond(
+    interaction: discord.Interaction,
+    word: str,
+    response: str,
+    reaction: Optional[str] = None,
+    cooldown_seconds: app_commands.Range[int, 0, 86400] = 0,
+):
+    if not is_bot_admin(interaction.user):
+        await interaction.response.send_message(
+            "❌ You don't have permission to manage trigger words.", ephemeral=True
+        )
+        return
+
+    word_clean = word.strip()
+    if not word_clean:
+        await interaction.response.send_message("❌ The trigger word can't be empty.", ephemeral=True)
+        return
+
+    await bot.db.upsert_trigger(interaction.guild_id, word_clean, response, reaction, cooldown_seconds)
+    bot.trigger_cache.setdefault(interaction.guild_id, {})[word_clean.lower()] = {
+        "response": response,
+        "reaction": reaction,
+        "cooldown_seconds": cooldown_seconds,
+    }
+
+    cooldown_desc = f"{cooldown_seconds}s cooldown" if cooldown_seconds else "no cooldown"
+    await interaction.response.send_message(
+        f"✅ Trigger `{word_clean}` saved ({cooldown_desc}).", ephemeral=True
+    )
+
+    if reaction:
+        # Try reacting to our own confirmation message just to validate the emoji is usable;
+        # if it fails, the trigger is still saved but won't be able to react when it fires.
+        try:
+            confirmation = await interaction.original_response()
+            await confirmation.add_reaction(reaction)
+        except discord.HTTPException:
+            await interaction.followup.send(
+                f"⚠️ I couldn't react with `{reaction}` — make sure it's a valid emoji I have access to "
+                "(the trigger was still saved, but the reaction may not work).",
+                ephemeral=True,
+            )
+
+
+@bot.tree.command(name="respond-remove", description="Remove a trigger word auto-responder")
+@app_commands.describe(word="The trigger word to remove")
+@app_commands.default_permissions(manage_messages=True)
+async def respond_remove(interaction: discord.Interaction, word: str):
+    if not is_bot_admin(interaction.user):
+        await interaction.response.send_message(
+            "❌ You don't have permission to manage trigger words.", ephemeral=True
+        )
+        return
+
+    word_clean = word.strip().lower()
+    await bot.db.remove_trigger(interaction.guild_id, word_clean)
+    bot.trigger_cache.get(interaction.guild_id, {}).pop(word_clean, None)
+
+    await interaction.response.send_message(f"🗑️ Trigger `{word_clean}` removed (if it existed).", ephemeral=True)
 
 
 # --- People/role allowed to change the bot's name/avatar ---
