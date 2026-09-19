@@ -311,15 +311,15 @@ async def stickstatus(interaction: discord.Interaction):
 @bot.tree.command(name="respond", description="Create or update a trigger word auto-responder")
 @app_commands.describe(
     word="Trigger word (matched as a whole word in messages, case-insensitive)",
-    response="What the bot replies when the word is mentioned",
-    reaction="Emoji the bot reacts with on the triggering message (optional)",
+    response="What the bot replies when the word is mentioned (optional if you set a reaction)",
+    reaction="Emoji the bot reacts with on the triggering message (optional if you set a response)",
     cooldown="Minimum time between triggers, e.g. 30s, 1m, 1h, 1d (optional, default: no cooldown)",
 )
 @app_commands.default_permissions(manage_messages=True)
 async def respond(
     interaction: discord.Interaction,
     word: str,
-    response: str,
+    response: Optional[str] = None,
     reaction: Optional[str] = None,
     cooldown: Optional[str] = None,
 ):
@@ -328,12 +328,22 @@ async def respond(
             "❌ You don't have permission to manage trigger words.", ephemeral=True
         )
         return
-
+ 
     word_clean = word.strip()
     if not word_clean:
         await interaction.response.send_message("❌ The trigger word can't be empty.", ephemeral=True)
         return
-
+ 
+    # At least one of response / reaction is required. An empty response is stored
+    # as "" (the DB column is NOT NULL) and is skipped by check_triggers.
+    response = (response or "").strip()
+    reaction = (reaction or "").strip() or None
+    if not response and not reaction:
+        await interaction.response.send_message(
+            "❌ Give at least a `response` or a `reaction` (or both).", ephemeral=True
+        )
+        return
+ 
     cooldown_seconds = 0
     if cooldown:
         try:
@@ -341,19 +351,25 @@ async def respond(
         except ValueError as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return
-
+ 
     await bot.db.upsert_trigger(interaction.guild_id, word_clean, response, reaction, cooldown_seconds)
     bot.trigger_cache.setdefault(interaction.guild_id, {})[word_clean.lower()] = {
         "response": response,
         "reaction": reaction,
         "cooldown_seconds": cooldown_seconds,
     }
-
+ 
     cooldown_desc = f"{cooldown_seconds}s cooldown" if cooldown_seconds else "no cooldown"
+    if response and reaction:
+        action_desc = "message + reaction"
+    elif response:
+        action_desc = "message only"
+    else:
+        action_desc = "reaction only"
     await interaction.response.send_message(
-        f"✅ Trigger `{word_clean}` saved ({cooldown_desc}).", ephemeral=True
+        f"✅ Trigger `{word_clean}` saved ({action_desc}, {cooldown_desc}).", ephemeral=True
     )
-
+ 
     if reaction:
         try:
             confirmation = await interaction.original_response()
