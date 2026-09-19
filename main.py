@@ -33,6 +33,27 @@ DEFAULT_THRESHOLD = int(os.getenv("DEFAULT_THRESHOLD", "1"))
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True  # required to read message content for the trigger-word auto-responder
 
+DURATION_UNIT_SECONDS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+DURATION_RE = re.compile(r"(\d+)\s*([dhms])", re.IGNORECASE)
+DURATION_FULL_RE = re.compile(r"^\s*(?:\d+\s*[dhms]\s*)+$", re.IGNORECASE)
+
+def parse_duration(duration_str: str) -> int:
+    if not DURATION_FULL_RE.match(duration_str):
+        raise ValueError(
+            "Invalid duration. Use a combination of d/h/m/s, e.g. `30m`, `2h`, `1d12h`."
+        )
+    matches = DURATION_RE.findall(duration_str)
+    if not matches:
+        raise ValueError(
+            "Invalid duration. Use a combination of d/h/m/s, e.g. `30m`, `2h`, `1d12h`."
+        )
+    seconds = sum(int(value) * DURATION_UNIT_SECONDS[unit.lower()] for value, unit in matches)
+    if seconds <= 0:
+        raise ValueError("Duration must be greater than 0.")
+    if seconds > 30 * 86400:
+        raise ValueError("Duration is too long (max 30 days).")
+    return seconds
+
 ACTIVITY_TYPES = {
     "playing": discord.ActivityType.playing,
     "watching": discord.ActivityType.watching,
@@ -292,7 +313,7 @@ async def stickstatus(interaction: discord.Interaction):
     word="Trigger word (matched as a whole word in messages, case-insensitive)",
     response="What the bot replies when the word is mentioned",
     reaction="Emoji the bot reacts with on the triggering message (optional)",
-    cooldown_seconds="Minimum time in seconds between triggers for this word (optional, default: no cooldown)",
+    cooldown="Minimum time between triggers, e.g. 30s, 1m, 1h, 1d (optional, default: no cooldown)",
 )
 @app_commands.default_permissions(manage_messages=True)
 async def respond(
@@ -300,7 +321,7 @@ async def respond(
     word: str,
     response: str,
     reaction: Optional[str] = None,
-    cooldown_seconds: app_commands.Range[int, 0, 86400] = 0,
+    cooldown: Optional[str] = None,
 ):
     if not is_bot_admin(interaction.user):
         await interaction.response.send_message(
@@ -312,6 +333,14 @@ async def respond(
     if not word_clean:
         await interaction.response.send_message("❌ The trigger word can't be empty.", ephemeral=True)
         return
+
+    cooldown_seconds = 0
+    if cooldown:
+        try:
+            cooldown_seconds = parse_duration(cooldown)
+        except ValueError as e:
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
 
     await bot.db.upsert_trigger(interaction.guild_id, word_clean, response, reaction, cooldown_seconds)
     bot.trigger_cache.setdefault(interaction.guild_id, {})[word_clean.lower()] = {
@@ -326,8 +355,6 @@ async def respond(
     )
 
     if reaction:
-        # Try reacting to our own confirmation message just to validate the emoji is usable;
-        # if it fails, the trigger is still saved but won't be able to react when it fires.
         try:
             confirmation = await interaction.original_response()
             await confirmation.add_reaction(reaction)
