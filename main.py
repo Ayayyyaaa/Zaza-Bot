@@ -54,6 +54,19 @@ def parse_duration(duration_str: str) -> int:
         raise ValueError("Duration is too long (max 30 days).")
     return seconds
 
+
+def format_duration(seconds: int) -> str:
+    """Formate un nombre de secondes en '1d12h', '30m', etc."""
+    if not seconds:
+        return "no cooldown"
+    parts = []
+    remaining = seconds
+    for unit, unit_seconds in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        value, remaining = divmod(remaining, unit_seconds)
+        if value:
+            parts.append(f"{value}{unit}")
+    return "".join(parts)
+
 ACTIVITY_TYPES = {
     "playing": discord.ActivityType.playing,
     "watching": discord.ActivityType.watching,
@@ -397,6 +410,39 @@ async def respond_remove(interaction: discord.Interaction, word: str):
     bot.trigger_cache.get(interaction.guild_id, {}).pop(word_clean, None)
 
     await interaction.response.send_message(f"🗑️ Trigger `{word_clean}` removed (if it existed).", ephemeral=True)
+
+
+@bot.tree.command(name="history", description="List all configured trigger word auto-responders for this server")
+async def history(interaction: discord.Interaction):
+    triggers = await bot.db.get_triggers(interaction.guild_id)
+
+    if not triggers:
+        await interaction.response.send_message("No trigger words configured on this server.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Trigger Word History",
+        description=f"{len(triggers)} trigger{'s' if len(triggers) != 1 else ''} configured on this server.",
+        color=discord.Color.blurple(),
+    )
+
+    for row in sorted(triggers, key=lambda r: r["word"]):
+        response = (row["response"] or "").strip()
+        reaction = row["reaction"]
+
+        if response and reaction:
+            action = f"💬 {response}\n{reaction}"
+        elif response:
+            action = f"💬 {response}"
+        elif reaction:
+            action = reaction
+        else:
+            action = "*(nothing configured)*"
+
+        cooldown = format_duration(row["cooldown_seconds"])
+        embed.add_field(name=f"{row['word']}", value=f"{action}\n {cooldown}", inline=True)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # --- People/role allowed to change the bot's name/avatar ---
