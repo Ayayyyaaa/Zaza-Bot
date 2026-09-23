@@ -431,16 +431,16 @@ async def history(interaction: discord.Interaction):
         reaction = row["reaction"]
 
         if response and reaction:
-            action = f"💬 {response}\n{reaction}"
+            action = f"_Responce_ : {response}\n_Reaction_ : {reaction}"
         elif response:
-            action = f"💬 {response}"
+            action = f"_Responce_ : {response}"
         elif reaction:
-            action = reaction
+            action = f"_Reaction_ : {reaction}"
         else:
             action = "*(nothing configured)*"
 
         cooldown = format_duration(row["cooldown_seconds"])
-        embed.add_field(name=f"**{row['word']}**", value=f"Reaction : {action}\nCooldown : {cooldown}", inline=True)
+        embed.add_field(name=f"**{row['word']}**", value=f"{action}\n_Cooldown_ : {cooldown}", inline=True)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
