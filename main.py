@@ -440,7 +440,7 @@ async def history(interaction: discord.Interaction):
             action = "*(nothing configured)*"
 
         cooldown = format_duration(row["cooldown_seconds"])
-        embed.add_field(name=f"{row['word']}", value=f"{action}\n {cooldown}", inline=True)
+        embed.add_field(name=f"**{row['word']}**", value=f"Reaction : {action}\nCooldown : {cooldown}", inline=True)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
