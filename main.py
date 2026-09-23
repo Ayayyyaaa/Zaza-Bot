@@ -328,7 +328,6 @@ async def stickstatus(interaction: discord.Interaction):
     reaction="Emoji the bot reacts with on the triggering message (optional if you set a response)",
     cooldown="Minimum time between triggers, e.g. 30s, 1m, 1h, 1d (optional, default: no cooldown)",
 )
-@app_commands.default_permissions(manage_messages=True)
 async def respond(
     interaction: discord.Interaction,
     word: str,
@@ -397,7 +396,6 @@ async def respond(
 
 @bot.tree.command(name="respond-remove", description="Remove a trigger word auto-responder")
 @app_commands.describe(word="The trigger word to remove")
-@app_commands.default_permissions(manage_messages=True)
 async def respond_remove(interaction: discord.Interaction, word: str):
     if not is_bot_admin(interaction.user):
         await interaction.response.send_message(
@@ -413,7 +411,6 @@ async def respond_remove(interaction: discord.Interaction, word: str):
 
 
 @bot.tree.command(name="history", description="List all configured trigger word auto-responders for this server")
-@app_commands.default_permissions(manage_messages=True)
 async def history(interaction: discord.Interaction):
     if not is_bot_admin(interaction.user):
         await interaction.response.send_message(
@@ -421,7 +418,8 @@ async def history(interaction: discord.Interaction):
         )
         return
 
-    triggers = await bot.db.get_triggers(interaction.guild_id)
+
+    triggers = await bot.db.get_triggers(interaction.guild.id)
 
     if not triggers:
         await interaction.response.send_message("No trigger words configured on this server.", ephemeral=True)
