@@ -413,7 +413,14 @@ async def respond_remove(interaction: discord.Interaction, word: str):
 
 
 @bot.tree.command(name="history", description="List all configured trigger word auto-responders for this server")
+@app_commands.default_permissions(manage_messages=True)
 async def history(interaction: discord.Interaction):
+    if not is_bot_admin(interaction.user):
+        await interaction.response.send_message(
+            "❌ You don't have permission to view trigger history.", ephemeral=True
+        )
+        return
+
     triggers = await bot.db.get_triggers(interaction.guild_id)
 
     if not triggers:
